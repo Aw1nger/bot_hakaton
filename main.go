@@ -58,7 +58,23 @@ func main() {
 		} else if update.CallbackQuery != nil {
 			switch update.CallbackQuery.Data {
 			case "login":
-				handleLogin(update.CallbackQuery.Message.Chat.ID, bot)
+				keyboard := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("Начать тест", "testStart"),
+					),
+				)
+
+				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "Нажмите чтобы начать тест:")
+				msg.ReplyMarkup = keyboard
+				bot.Send(msg)
+
+			case "testStart":
+				if _, exists := tests[update.CallbackQuery.Message.Chat.ID]; exists {
+					msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "Вы уже начали тест. Пожалуйста, ответьте на текущий вопрос.")
+					bot.Send(msg)
+				} else {
+					handleLogin(update.CallbackQuery.Message.Chat.ID, bot)
+				}
 			}
 		}
 	}
@@ -88,22 +104,15 @@ func startTest(test *UserTest, bot *tgbotapi.BotAPI) {
 		"Вопрос 10:",
 	}
 
-
-
-
 	if test.Current < len(questions) {
 		msg := tgbotapi.NewMessage(test.ChatID, questions[test.Current])
 		bot.Send(msg)
 	} else {
 		finishTest(test, bot)
 	}
-
-	
 }
 
 func handleAnswer(test *UserTest, answer string, bot *tgbotapi.BotAPI) {
-
-	
 	test.Answers = append(test.Answers, answer)
 	test.Current++
 	startTest(test, bot)
