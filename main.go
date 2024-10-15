@@ -58,3 +58,5 @@ func handleLogin(chatID int64, bot *tgbotapi.BotAPI) {
 	msg := tgbotapi.NewMessage(chatID, "Вы нажали 'Войти'. Здесь будет логика входа.")
 	bot.Send(msg)
 }
+
+//dima loh
