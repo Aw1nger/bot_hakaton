@@ -1,7 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -14,6 +20,7 @@ type UserTest struct {
 }
 
 var tests = make(map[int64]*UserTest)
+var userTokens = make(map[int64]string)
 
 func main() {
 	token, err := os.ReadFile("token.txt")
@@ -43,13 +50,22 @@ func main() {
 					),
 				)
 
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Добро пожаловать на тест! Войдите чтобы начать тест")
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Добро пожаловать на тест! Войдите, чтобы начать.")
 				msg.ReplyMarkup = keyboard
 				bot.Send(msg)
 
 			default:
 				if test, exists := tests[update.Message.Chat.ID]; exists {
-					handleAnswer(test, update.Message.Text, bot)
+					switch test.Current {
+					case 0:
+						test.Answers = append(test.Answers, update.Message.Text)
+						test.Current++
+						msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Введите ваш пароль:")
+						bot.Send(msg)
+					case 1:
+						test.Answers = append(test.Answers, update.Message.Text)
+						userLogin(test.Answers[0], test.Answers[1], bot, update.Message.Chat.ID)
+					}
 				} else {
 					msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Я не понимаю. Используйте /help для получения информации.")
 					bot.Send(msg)
@@ -58,72 +74,115 @@ func main() {
 		} else if update.CallbackQuery != nil {
 			switch update.CallbackQuery.Data {
 			case "login":
-				keyboard := tgbotapi.NewInlineKeyboardMarkup(
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("Начать тест", "testStart"),
-					),
-				)
-
-				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "Нажмите чтобы начать тест:")
-				msg.ReplyMarkup = keyboard
+				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "Введите вашу почту:")
 				bot.Send(msg)
-
-			case "testStart":
-				if _, exists := tests[update.CallbackQuery.Message.Chat.ID]; exists {
-					msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "Вы уже начали тест. Пожалуйста, ответьте на текущий вопрос.")
-					bot.Send(msg)
-				} else {
-					handleLogin(update.CallbackQuery.Message.Chat.ID, bot)
+				tests[update.CallbackQuery.Message.Chat.ID] = &UserTest{
+					ChatID:  update.CallbackQuery.Message.Chat.ID,
+					Current: 0,
+					Answers: make([]string, 0),
 				}
 			}
 		}
 	}
 }
 
-func handleLogin(chatID int64, bot *tgbotapi.BotAPI) {
-	test := &UserTest{
-		ChatID:  chatID,
-		Current: 0,
-		Answers: make([]string, 0),
+func userLogin(email string, password string, bot *tgbotapi.BotAPI, chatID int64) {
+	loginData := map[string]string{
+		"email":    email,
+		"password": password,
 	}
-	tests[chatID] = test
-	startTest(test, bot)
+
+	jsonData, err := json.Marshal(loginData)
+	if err != nil {
+		log.Printf("Ошибка маршализации данных: %v", err)
+		return
+	}
+
+	req, err := http.NewRequest("POST", "https://your-api-url.com/api/users/login", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Ошибка создания запроса: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Ошибка выполнения запроса: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := ioutil.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusOK {
+		var result map[string]interface{}
+		err := json.Unmarshal(body, &result)
+		if err != nil {
+			log.Printf("Ошибка декодирования ответа: %v, ответ: %s", err, string(body))
+			return
+		}
+
+		log.Printf("Ответ от API: %v", result)
+
+		token, ok := result["token"].(string)
+		if !ok {
+			log.Printf("Токен отсутствует или неверного формата: %v", result)
+			msg := tgbotapi.NewMessage(chatID, "Ошибка входа: токен не найден.")
+			bot.Send(msg)
+			return
+		}
+
+		msg := tgbotapi.NewMessage(chatID, "Вход выполнен успешно!")
+		bot.Send(msg)
+
+		saveToken(chatID, token)
+
+		getUserProfile(chatID, bot)
+	} else {
+		log.Printf("Ошибка входа, статус: %d, тело ответа: %s", resp.StatusCode, string(body))
+		msg := tgbotapi.NewMessage(chatID, "Ошибка входа. Проверьте данные.")
+		bot.Send(msg)
+	}
 }
 
-func startTest(test *UserTest, bot *tgbotapi.BotAPI) {
-	questions := []string{
-		"Вопрос 1:",
-		"Вопрос 2:",
-		"Вопрос 3:",
-		"Вопрос 4:",
-		"Вопрос 5:",
-		"Вопрос 6:",
-		"Вопрос 7:",
-		"Вопрос 8:",
-		"Вопрос 9:",
-		"Вопрос 10:",
+
+func saveToken(chatID int64, token string) {
+	userTokens[chatID] = token
+}
+
+func makeAuthenticatedRequest(chatID int64, endpoint string) (*http.Response, error) {
+	token, exists := userTokens[chatID]
+	if !exists {
+		return nil, errors.New("пользователь не авторизован")
 	}
 
-	if test.Current < len(questions) {
-		msg := tgbotapi.NewMessage(test.ChatID, questions[test.Current])
+	req, err := http.NewRequest("GET", "https://your-api-url.com"+endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{}
+	return client.Do(req)
+}
+
+func getUserProfile(chatID int64, bot *tgbotapi.BotAPI) {
+	resp, err := makeAuthenticatedRequest(chatID, "/api/users/profile")
+	if err != nil {
+		log.Printf("Ошибка при выполнении запроса профиля: %v", err)
+		msg := tgbotapi.NewMessage(chatID, "Ошибка получения профиля.")
+		bot.Send(msg)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		body, _ := ioutil.ReadAll(resp.Body)
+		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ваш профиль: %s", string(body)))
 		bot.Send(msg)
 	} else {
-		finishTest(test, bot)
+		msg := tgbotapi.NewMessage(chatID, "Не удалось получить профиль.")
+		bot.Send(msg)
 	}
-}
-
-func handleAnswer(test *UserTest, answer string, bot *tgbotapi.BotAPI) {
-	test.Answers = append(test.Answers, answer)
-	test.Current++
-	startTest(test, bot)
-}
-
-func finishTest(test *UserTest, bot *tgbotapi.BotAPI) {
-	msg := tgbotapi.NewMessage(test.ChatID, "Тест успешно пройден! Возвращайтесь на сайт: [ссылка](https://example.com)")
-	msg.ParseMode = "Markdown"
-	bot.Send(msg)
-
-	log.Printf("Ответы пользователя %d: %v", test.ChatID, test.Answers)
-
-	delete(tests, test.ChatID)
 }
